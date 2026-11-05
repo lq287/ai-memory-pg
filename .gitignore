@@ -1,0 +1,33 @@
+# ---- 本地依赖与缓存（都不入库）--------------------------------------------
+node_modules/
+.npm-cache/
+.wheels/
+.pylibs/
+.pip-cache/
+.piptmp/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 环境
+.env
+
+# 系统二进制：pgvector 安装包 + 本地 ONNX 模型（98MB int8）+ 便携依赖
+vendor/
+
+# 与记忆系统无关的同目录项目（语音那套），整目录排除；它的 .cache 有几百 MB
+voice/.cache/
+voice/**/__pycache__/
+
+# 验证/构建日志
+*.log
+.tmp-server.log
+.tmp-server.err
+.verify-last.log
+
+# 打包产物（npm pack 生成的 tgz，按需重新生成）
+plugin/*.tgz
+# 与记忆系统无关的同目录项目：语音那套（整目录排除）
+voice/

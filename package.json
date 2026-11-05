@@ -1,0 +1,16 @@
+{
+  "name": "ai-memory-sqlcheck",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "本地验证夹具：用 PGlite（真实 PostgreSQL 18 编译成 WASM，内置 pgvector + pg_trgm）跑通 sql/*.sql，不需要 Docker、不需要管理员权限。不参与生产部署。",
+  "scripts": {
+    "check": "node scripts/sqlcheck.mjs",
+    "serve": "node scripts/pgserver.mjs"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "@electric-sql/pglite-pgvector": "^0.0.12",
+    "@electric-sql/pglite-socket": "^0.2.14"
+  }
+}

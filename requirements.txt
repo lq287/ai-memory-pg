@@ -1,0 +1,6 @@
+# 运行时依赖。刻意只有两个：
+#   psycopg   —— PG 驱动（binary 版带预编译 libpq，免装 PostgreSQL 客户端）
+#   pgvector  —— 只为了注册 list[float] -> vector 的参数适配器
+# 其余（LLM、embedding）全走标准库 urllib，避免 SDK 版本地狱。
+psycopg[binary]>=3.1
+pgvector>=0.3

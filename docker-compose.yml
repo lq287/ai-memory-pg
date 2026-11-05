@@ -1,0 +1,35 @@
+services:
+  db:
+    # 官方 pgvector 镜像，已内置 vector / pg_trgm，不用自己编译
+    image: pgvector/pgvector:pg17
+    container_name: ai-memory-pg
+    environment:
+      POSTGRES_USER: mem
+      POSTGRES_PASSWORD: mem
+      POSTGRES_DB: mem
+      # 中文文本排序/比较；建库时定，之后改要重建
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      # 故意不用 5432，避免和你本机已有的 PG 撞端口
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 首次启动自动建表（只在数据卷为空时执行）
+      - ./sql/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      # 其余脚本挂进来手动跑，不要自动执行：
+      #   02 里是 PREPARE 语句，会话级、不持久化
+      - ./sql:/sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mem -d mem"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    command:
+      - postgres
+      # HNSW 建索引时的内存预算。默认 64MB 在大批量导入时会让建索引奇慢，
+      # 而且 pgvector 会在超出时给出 NOTICE 但不中断 —— 容易以为索引没问题。
+      - -c
+      - maintenance_work_mem=512MB
+
+volumes:
+  pgdata:

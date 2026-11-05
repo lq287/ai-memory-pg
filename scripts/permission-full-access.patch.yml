@@ -1,0 +1,32 @@
+# =============================================================================
+# 可选：把整个部署的文件沙箱默认抬到 danger-full-access
+#
+# 用法（在任意目录）：
+#   dsh --profile web --patch "D:\DSH proj\AI记忆\scripts\permission-full-access.patch.yml"
+#
+# 或者永久生效——把下面的内容**追加**到用户覆盖层
+#   %USERPROFILE%\.dsh\profiles\web\cordis.patch.yml
+# （那个文件现在是 `[]`，要保留成 YAML 列表；追加时去掉顶部的 [] 或改成两段合并）
+# 改完重启 `dsh web`，新会话生效。
+#
+# 但**先别急着用这个**。真正的原因通常只有一个，代价小得多：
+#   从别的工作区跑记忆脚本时，CPython 会去刷新
+#   D:\DSH proj\AI记忆\app\__pycache__\*.pyc —— 那是一次"工作区外写入"，
+#   Windows 沙箱（WRITE_RESTRICTED token，只拦写）拒绝 → 升级权限 → 弹授权。
+#   mem.cmd 现在已经设 PYTHONDONTWRITEBYTECODE=1，脚本对磁盘零写入，
+#   沙箱没有可拒的东西。先确认那个修法是否已经够用。
+#
+# 只有当"零写入"仍然被拒（例如宿主还限制了执行或网络）时，才用这个补丁。
+#
+# 注意两点语义：
+#   1. 补丁会**整块替换**目标行的 config（不是合并），所以必须写全该行的键。
+#      sandbox-policy 拥有 mode + workspaceRoot 两个键。
+#   2. 这里刻意**不改 approval**：mode 变成 full-access 之后文件写入不再被拒，
+#      也就没有"为文件操作申请提权"这回事；approval 保持 ask，
+#      意味着其它真正需要人确认的工具动作仍然会问你。全放开 approval 是另一回事。
+# =============================================================================
+
+- id: sandbox-policy
+  config:
+    mode: danger-full-access
+    workspaceRoot: !!js process.cwd()
