@@ -58,7 +58,7 @@ scripts/mem.py            记忆库命令行：add/recall/fact/task/work/distill
 scripts/verify-all.ps1    一条命令跑完以上全部（含起停服务）
 
 tests/test_decide.py    28 条：四态护栏逐条对应一种线上事故
-tests/test_pipeline.py  33 条：抽取→候选→建议→裁决→预算装配 全链路（不连库）
+tests/test_pipeline.py  41 条：抽取→候选→建议→裁决→预算装配 全链路（不连库）
 tests/test_distill.py   25 条：LLM 后端的接地校验（编数字必被拦）+ 后端选择
 ```
 
@@ -399,7 +399,7 @@ powershell -File scripts\verify-all.ps1 -Dsn "postgresql://mem:mem@127.0.0.1:543
 - **`python -m app.demo` 跑通四态**：日志里能看到
   `longterm → set_fact`、`model=accept`、`model=defer`（建冲突边）、`model=merge`（抬信号），
   以及裁决后新值转正、旧值退出召回。
-- **86 条 Python 单测**（28 + 33 + 25）全绿。
+- **115 条 Python 单测**（28 + 41 + 25 + 21）全绿，零依赖、不连库，CI 上跑。
 
 - **`verify_all.py` 57/57 项通过**：Store / Worker / retrieve 的每个对外入口都在真库上打了一遍 ——
   入队去重、领取/确认/失败退避/租约回收、aborted 事务后仍能记账、四态落库、

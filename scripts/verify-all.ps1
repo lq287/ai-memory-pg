@@ -67,7 +67,7 @@ Step 'python -m compileall' {
 Step 'tests/test_decide.py (28)' {
     python tests\test_decide.py 2>&1 | Select-Object -Last 2
 }
-Step 'tests/test_pipeline.py (33)' {
+Step 'tests/test_pipeline.py (41)' {
     python tests\test_pipeline.py 2>&1 | Select-Object -Last 2
 }
 Step 'tests/test_distill.py (25：接地校验/后端选择)' {
