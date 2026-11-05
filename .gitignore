@@ -31,3 +31,6 @@ voice/**/__pycache__/
 plugin/*.tgz
 # 与记忆系统无关的同目录项目：语音那套（整目录排除）
 voice/
+
+# 临时调试脚本（从 DSH 会话日志重建时间线），不入库但保留在本地
+scripts/session_digest.cjs
