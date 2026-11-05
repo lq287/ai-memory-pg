@@ -1,7 +1,13 @@
 # AI 记忆层 · 实现级交付
 
+[![repo](https://img.shields.io/badge/GitHub-lq287%2Fai--memory--pg-181717?logo=github)](https://github.com/lq287/ai-memory-pg)
+[![plugin](https://img.shields.io/badge/DSH%20plugin-dsh--memory--pg-4B32C3)](plugin/README.md)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 单 PostgreSQL（pgvector + pg_trgm），可选 Apache AGE。四个不可逆决策落成 schema 与
 管线，并且**每一条都在真库里跑过**。
+
+> 仓库：https://github.com/lq287/ai-memory-pg ｜ DSH 插件：见 [§十五](#十五dsh-插件dsh-memory-pg) 与 `plugin/README.md`
 
 > 本版按最新设计稿重写，与上一版的差异集中在这一段，其余章节同步更新。
 >
