@@ -23,7 +23,7 @@
 | 时段关键词 | 日/周/月/年 rollup：`2026-W43: pgvector/编译/msvc…`，可召回 |
 | 图扩展 | 实体 + 关系 + 多跳遍历，作为召回的第三路（不用 Apache AGE） |
 | 整用户清除 | `purge_user` 硬删 8 张表，二次确认 + dryrun 对账 |
-| DSH 插件 | 7 个原生工具 + **每轮自动注入记忆前言** |
+| DSH 插件 | 8 个原生工具 + **每轮自动注入记忆前言**；可选本机/服务器/双向同步 |
 
 ## 快速开始
 
@@ -167,9 +167,13 @@ summary 记忆。三个判断：按 **`event_time`** 分桶（补录旧记忆会
 ## DSH 插件
 
 `plugin/` 把上面所有能力接进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)：
-7 个原生工具（`memory_recall` / `memory_add` / `memory_fact_get` / `memory_fact_set` /
-`memory_context` / `memory_digest` / `memory_health`），外加**每轮自动注入**记忆前言——
-不再依赖"有人记得去查"。安装与配置见 [`plugin/README.md`](plugin/README.md)。
+**8 个原生工具**（`memory_recall` / `memory_add` / `memory_fact_get` / `memory_fact_set` /
+`memory_context` / `memory_digest` / `memory_health` / `memory_sync`），外加**每轮自动注入**
+记忆前言——不再依赖"有人记得去查"。
+
+`target: local | server | both` 决定用哪张库：本机、服务器（自动拉 SSH 隧道，本机库一个字节
+都不碰）、或本机为主再与服务器双向同步。安装与三种场景的完整配置见
+[`plugin/INSTALL.md`](plugin/INSTALL.md)，设计说明见 [`plugin/README.md`](plugin/README.md)。
 
 ```bash
 dsh plugin --profile web add dsh-memory-pg   # 再把 dsh-memory-pg 加进 profile 的 bundles，重启 dsh
