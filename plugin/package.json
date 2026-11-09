@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-pg",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "PostgreSQL-backed long-term memory for DeepSeek Harness: native memory tools + a per-turn memory preamble (vector ⊕ keyword ⊕ graph recall, four-state write arbitration, day/week/month/year keyword digests).",
   "keywords": [
     "dsh",
@@ -22,10 +22,10 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/index.js",
-    "lib/sidecar.js",
+    "lib/",
     "cordis.patch.yml",
     "README.md",
+    "INSTALL.md",
     "LICENSE"
   ],
   "dsh": {

@@ -27,3 +27,22 @@
         factLimit: 10
         includeTasks: true
         refreshSteps: 0
+
+        # ---- 用哪一张库（v0.2.0 新增）------------------------------------
+        #   local  = 只用本机库（默认，行为和以前完全一样）
+        #   server = 只用服务器上的库：自动拉 SSH 本地端口转发，本机库一个字节都不动
+        #   both   = 读写本机库，再用 memory_sync / syncAuto 与服务器双向同步
+        target: local
+        # serverHost: '203.0.113.10'       # 不给就用环境变量 DSH_SSH_HOST
+        # serverUser: root
+        # serverPort: 22
+        # serverKeyFile: '/path/to/id_rsa' # 不给则找 syncScript 旁边的 run/sync/ssh/id_rsa
+        # serverPassword: ''               # 没有可用私钥时的回退（可用 DSH_SSH_PASS）
+        serverDsn: 'postgresql://mem:mem@127.0.0.1:5432/mem'
+        tunnelPort: 15432
+
+        # ---- 同步脚本（memory_sync 工具）-----------------------------------
+        # syncScript: '/path/to/shell/proactive/tools/sync_mem.py'
+        syncAuto: false
+        syncTimeoutMs: 600000
+        # pythonPath: '/path/to/channels/pylibs'  # paramiko 不在系统 python 里时用它

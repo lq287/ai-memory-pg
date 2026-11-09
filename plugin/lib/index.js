@@ -19,7 +19,11 @@
 
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import path from "node:path";
+import fs from "node:fs";
 import { MemorySidecar } from "./sidecar.js";
+import { PgTunnel } from "./tunnel.js";
+import { runSync, SYNC_MODES } from "./sync.js";
 
 export const name = "memory-pg";
 export const inject = ["tools", "agents"];
@@ -47,6 +51,37 @@ export const Config = z.object({
   refreshSteps: z.number().min(0).max(50).default(0),
   /** 单次 sidecar 调用超时（毫秒）。 */
   timeoutMs: z.number().min(1000).max(120000).default(30000),
+
+  // ------------------------------------------------------------ 用哪一张库
+  /**
+   * 记忆库目标：
+   *   local  —— 只用本机这张库（默认，和以前完全一样）
+   *   server —— 只用服务器上那张库：自动拉一条 SSH 本地端口转发，
+   *             sidecar 的 DSN 指向 127.0.0.1:tunnelPort，本机库完全不会被碰
+   *   both   —— 工具读写本机这张库，靠 memory_sync / syncAuto 与服务器保持一致
+   * 只用一个库时，另一张库不会有任何写入。
+   */
+  target: z.string().default("local"),
+  /** server 模式要连的机器（不给就用环境变量 DSH_SSH_HOST）。 */
+  serverHost: z.string().default(""),
+  serverPort: z.number().default(22),
+  serverUser: z.string().default(""),
+  /** 私钥文件；留空则自动找同步脚本旁边的 run/sync/ssh/id_rsa。 */
+  serverKeyFile: z.string().default(""),
+  /** 没有可用私钥时的回退（不给就用 DSH_SSH_PASS）。 */
+  serverPassword: z.string().default(""),
+  /** 服务器上那张库的 DSN（隧道里连它）。 */
+  serverDsn: z.string().default(""),
+  /** 本地隧道监听端口。 */
+  tunnelPort: z.number().min(1).max(65535).default(15432),
+  /** 双向同步脚本 sync_mem.py 的路径；留空则 memory_sync 会直接说怎么配。 */
+  syncScript: z.string().default(""),
+  /** 写操作之后是否自动同步（target=both 时才有意义）。 */
+  syncAuto: z.boolean().default(false),
+  /** 单次同步的超时（毫秒）。 */
+  syncTimeoutMs: z.number().min(10000).max(1800000).default(600000),
+  /** 额外 PYTHONPATH（OS 路径分隔符分隔）；paramiko 不在系统 python 里时用它。 */
+  pythonPath: z.string().default(""),
 });
 
 // ---------------------------------------------------------------------------
@@ -120,17 +155,119 @@ export function apply(ctx, config) {
     else console.error(`[memory-pg] ${line}`);
   };
 
+  // --------------------------------------------------------- 选库 / 隧道 / 同步
+  const target = String(config.target || "local").toLowerCase();
+  if (!["local", "server", "both"].includes(target)) {
+    throw new Error(
+      `memory-pg: 不认识的 target="${config.target}"（只能是 local / server / both）`,
+    );
+  }
+  const LOCAL_DSN = config.dsn || process.env.MEM_PG_DSN || "";
+  const SERVER_REMOTE_DSN =
+    config.serverDsn || process.env.MEM_SERVER_DSN || "postgresql://mem:mem@127.0.0.1:5432/mem";
+  const serverHost = config.serverHost || process.env.DSH_SSH_HOST || "";
+  const serverUser = config.serverUser || process.env.DSH_SSH_USER || "root";
+  const serverPassword = config.serverPassword || process.env.DSH_SSH_PASS || "";
+  // 私钥默认找同步脚本旁边的 run/sync/ssh/id_rsa —— sync_mem.py 用的就是那一把
+  const autoKeyFile = config.syncScript
+    ? path.resolve(path.dirname(config.syncScript), "..", "run", "sync", "ssh", "id_rsa")
+    : "";
+  const serverKeyFile =
+    config.serverKeyFile || (autoKeyFile && fs.existsSync(autoKeyFile) ? autoKeyFile : "");
+
+  // paramiko 不一定装在系统 python 里：把独立通道和记忆库自己的 pylibs 都塞进 PYTHONPATH
+  const pylibs = [];
+  if (config.syncScript) {
+    const shellDir = path.resolve(path.dirname(config.syncScript), "..", "..");
+    pylibs.push(path.join(shellDir, "channels", "pylibs"), path.join(shellDir, "proactive", "tools"));
+  }
+  if (config.pythonPath) pylibs.push(...String(config.pythonPath).split(path.delimiter).filter(Boolean));
+  pylibs.push(path.join(config.projectRoot, ".pylibs"), config.projectRoot);
+
+  /** 把远程 DSN 的 host:port 换成本地隧道（URL 形式与关键字形式都兜住）。 */
+  function dsnViaTunnel(dsn, port) {
+    try {
+      const u = new URL(dsn);
+      if (!/^postgres/.test(u.protocol)) throw new Error("not postgres");
+      u.hostname = "127.0.0.1";
+      u.port = String(port);
+      return u.toString();
+    } catch {
+      return String(dsn)
+        .replace(/(^|\s)host=\S+/g, "$1host=127.0.0.1")
+        .replace(/(^|\s)port=\d+/g, `$1port=${port}`);
+    }
+  }
+
+  const tunnel =
+    target === "server"
+      ? new PgTunnel({
+          pythonExe: config.pythonExe,
+          pylibs,
+          host: serverHost,
+          port: config.serverPort,
+          user: serverUser,
+          keyFile: serverKeyFile,
+          password: serverPassword,
+          localPort: config.tunnelPort,
+          log,
+        })
+      : null;
+
+  const effectiveDsn =
+    target === "server" ? dsnViaTunnel(SERVER_REMOTE_DSN, config.tunnelPort) : LOCAL_DSN;
+
+  const whereText =
+    target === "server"
+      ? `服务器 ${serverHost || "(缺 serverHost)"} 上的库（隧道 127.0.0.1:${config.tunnelPort}）`
+      : target === "both"
+        ? "本机库（与服务器靠 sync_mem 双向同步）"
+        : "本机库";
+  log(`记忆库目标 target=${target} → ${whereText}`);
+
   const sidecar = new MemorySidecar({
     projectRoot: config.projectRoot,
     pythonExe: config.pythonExe,
-    dsn: config.dsn,
+    dsn: effectiveDsn,
     userId: config.userId,
     timeoutMs: config.timeoutMs,
     log,
   });
+
+  /** 所有工具与自动注入都走这里：server 模式先把隧道确保起来。 */
+  const request = async (op, args = {}, timeoutMs) => {
+    if (tunnel) await tunnel.ensure();
+    return sidecar.request(op, args, timeoutMs);
+  };
+
+  /** 同步脚本要的环境：DSN 走本机那张库，SSH 参数从配置补。 */
+  const syncEnv = () => ({
+    ...(LOCAL_DSN ? { MEM_PG_DSN: LOCAL_DSN } : {}),
+    ...(serverHost ? { DSH_SSH_HOST: serverHost } : {}),
+    ...(serverUser ? { DSH_SSH_USER: serverUser } : {}),
+    ...(serverPassword ? { DSH_SSH_PASS: serverPassword } : {}),
+  });
+
+  /** 写完顺手同步（只有 target=both 且 syncAuto 才做）。 */
+  const maybeSync = async () => {
+    if (!(config.syncAuto && target === "both" && config.syncScript)) return "";
+    const r = await runSync({
+      script: config.syncScript,
+      pythonExe: config.pythonExe,
+      mode: "both",
+      env: syncEnv(),
+      timeoutMs: config.syncTimeoutMs,
+    });
+    if (r.ok) return `\n（已与服务器同步，${r.secs}s）`;
+    const last = (r.tail || "").split("\n").slice(-1)[0] || "";
+    return `\n（同步失败 rc=${r.code}${last ? "：" + last.slice(0, 160) : ""}）`;
+  };
   // 清理：cordis 的 effect 收一个**零参工厂**，它返回 disposer。
   // 写成 ctx.effect((dispose) => ...) 会抛 "dispose is not a function"。
-  ctx.effect?.(() => () => void sidecar.dispose());
+  ctx.effect?.(() => () => {
+    void sidecar.dispose();
+    tunnel?.dispose();
+  });
 
   // -------------------------------------------------------------- 工具
   if (config.tools) {
@@ -158,7 +295,7 @@ export function apply(ctx, config) {
         },
         run: async (args) => {
           try {
-            const r = await sidecar.request("recall", {
+            const r = await request("recall", {
               query: args.query,
               limit: args.limit,
               tags: args.tags,
@@ -201,7 +338,7 @@ export function apply(ctx, config) {
         },
         run: async (args) => {
           try {
-            const r = await sidecar.request("add", {
+            const r = await request("add", {
               text: args.text,
               kind: args.kind,
               importance: args.importance,
@@ -209,9 +346,12 @@ export function apply(ctx, config) {
               entities: args.entities,
               source: args.source || "conversation",
             });
-            return r.action === "drop"
-              ? `未写入（裁决=${r.action}，${r.reason}）`
-              : `已写入：裁决=${r.action}（${r.reason}） id=${String(r.id || "-").slice(0, 8)}`;
+            return (
+              (r.action === "drop"
+                ? `未写入（裁决=${r.action}，${r.reason}）`
+                : `已写入：裁决=${r.action}（${r.reason}） id=${String(r.id || "-").slice(0, 8)}`) +
+              (await maybeSync())
+            );
           } catch (err) {
             return errText("写入", err);
           }
@@ -234,7 +374,7 @@ export function apply(ctx, config) {
         },
         run: async (args) => {
           try {
-            const r = await sidecar.request("fact_get", { keys: args.keys, limit: args.limit });
+            const r = await request("fact_get", { keys: args.keys, limit: args.limit });
             const lines = r.facts.map(
               (f) => `- ${f.key} = ${JSON.stringify(f.value)} (conf=${f.confidence}, ${f.age_days}d)`,
             );
@@ -266,12 +406,12 @@ export function apply(ctx, config) {
         },
         run: async (args) => {
           try {
-            const r = await sidecar.request("fact_set", {
+            const r = await request("fact_set", {
               key: args.key,
               value: args.value,
               importance: args.importance,
             });
-            return `已写入事实 ${r.key} = ${JSON.stringify(r.value)}`;
+            return `已写入事实 ${r.key} = ${JSON.stringify(r.value)}` + (await maybeSync());
           } catch (err) {
             return errText("写事实", err);
           }
@@ -291,7 +431,7 @@ export function apply(ctx, config) {
         },
         run: async (args) => {
           try {
-            const r = await sidecar.request("context", {
+            const r = await request("context", {
               max_chars: args.max_chars,
               with_conflicts: args.with_conflicts,
             });
@@ -323,13 +463,13 @@ export function apply(ctx, config) {
           const period = args.period || "week";
           try {
             if (args.build) {
-              const r = await sidecar.request("digest_build", { period, top: args.top });
+              const r = await request("digest_build", { period, top: args.top });
               const lines = r.built.map(
                 (b) => `- [${b.label}] ${b.episode_count} 条：${b.keywords.slice(0, 8).join("、")}`,
               );
               return r.count ? `重建 ${r.count} 期：\n${lines.join("\n")}` : "没有可摘要的时段";
             }
-            const r = await sidecar.request("digest_show", {
+            const r = await request("digest_show", {
               period: period === "all" ? undefined : period,
               limit: args.limit || 5,
             });
@@ -352,11 +492,12 @@ export function apply(ctx, config) {
         parameters: {},
         run: async () => {
           try {
-            const r = await sidecar.request("health", {});
+            const r = await request("health", {});
             const q = r.quality || {};
             const g = r.graph || {};
             return (
-              `用户 ${r.user}｜向量模型 ${r.embedder}\n` +
+              `库：${whereText}｜用户 ${r.user}｜向量模型 ${r.embedder}\n` +
+              `${tunnel ? `隧道：${tunnel.describe}\n` : ""}` +
               `当前有效记忆 ${r.episodes_live} 条、事实 ${r.facts_live} 条\n` +
               `待裁决 ${q.pending_review ?? "?"}｜已过期未清 ${q.expired_live ?? "?"}｜` +
               `缺向量 ${q.missing_embedding ?? "?"}｜未决冲突 ${q.open_conflicts ?? "?"}\n` +
@@ -365,6 +506,38 @@ export function apply(ctx, config) {
           } catch (err) {
             return errText("体检", err);
           }
+        },
+      }),
+    );
+
+    ctx.tools.register(
+      textTool({
+        name: "memory_sync",
+        description:
+          "本机记忆库 ↔ 服务器记忆库的双向同步（走 proactive/tools/sync_mem.py，两侧同一份代码）。" +
+          "target=both 时用它把两边抹平：status 只看差异，pull 以服务器为准、push 只补服务器缺的行。",
+        parameters: {
+          mode: {
+            type: "string",
+            enum: SYNC_MODES,
+            description: "status（只看差异，默认）/ pull（服务器→本机）/ push（本机→服务器）/ both（双向）",
+          },
+          dryRun: { type: "boolean", description: "true = 只生成 SQL 不落库。" },
+        },
+        run: async (args) => {
+          const mode = args.mode || "status";
+          const r = await runSync({
+            script: config.syncScript,
+            pythonExe: config.pythonExe,
+            mode,
+            dryRun: args.dryRun,
+            env: syncEnv(),
+            timeoutMs: config.syncTimeoutMs,
+          });
+          const head = r.ok
+            ? `同步 ${mode} 完成（${r.secs}s）`
+            : `同步 ${mode} 失败（rc=${r.code}，${r.secs}s）`;
+          return `${head}\n${r.tail || r.out.slice(-900) || "（没有输出）"}`;
         },
       }),
     );
@@ -392,7 +565,7 @@ export function apply(ctx, config) {
       let text = cache.get(key);
       if (text === undefined) {
         try {
-          const r = await sidecar.request("context", {
+          const r = await request("context", {
             max_chars: config.contextBudget,
             fact_limit: config.factLimit,
             with_tasks: config.includeTasks,

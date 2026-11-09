@@ -23,6 +23,7 @@ when someone remembers to go query it.
 | `memory_context` | "what should I know right now" preamble (facts + recent digests + live tasks) |
 | `memory_digest` | build/read day/week/month/year keyword digests |
 | `memory_health` | connectivity, embedder, scale, health counters, graph stats |
+| `memory_sync` | run the two-way sync script (`status` / `pull` / `push` / `both`) |
 
 Plus `autoContext` (default **on**): before each turn’s first step the plugin injects one
 plugin-sourced message containing the preamble, budgeted by `contextBudget` characters.
@@ -89,6 +90,60 @@ dsh --profile web --patch ./memory.patch.yml
 | `includeTasks` | `true` | include live tasks in the preamble |
 | `refreshSteps` | `0` | re-sample the preamble every N steps (0 = once per turn) |
 | `timeoutMs` | `30000` | per-call timeout |
+| `target` | `local` | which database to use: `local` / `server` / `both` |
+| `serverHost` | env `DSH_SSH_HOST` | server holding the second database (`target=server`) |
+| `serverPort` | `22` | SSH port for the tunnel |
+| `serverUser` | env `DSH_SSH_USER` | SSH user |
+| `serverKeyFile` | auto (`run/sync/ssh/id_rsa`) | private key for the tunnel |
+| `serverPassword` | env `DSH_SSH_PASS` | fallback when no usable key |
+| `serverDsn` | `postgresql://mem:mem@127.0.0.1:5432/mem` | DSN of the server database (inside the tunnel) |
+| `tunnelPort` | `15432` | local port the tunnel listens on |
+| `syncScript` | — | path to `sync_mem.py` (enables `memory_sync`) |
+| `syncAuto` | `false` | sync after every write (`target=both` only) |
+| `syncTimeoutMs` | `600000` | per-sync timeout |
+| `pythonPath` | — | extra `PYTHONPATH` (OS separator), when `paramiko` is not in the system python |
+
+## Choosing which database (v0.2.0)
+
+`target` decides where every tool **and** the automatic preamble read and write:
+
+| `target` | reads/writes | other database |
+|---|---|---|
+| `local` (default) | the local PostgreSQL | untouched |
+| `server` | the server's PostgreSQL, via an SSH local port forward | the local one is untouched |
+| `both` | the local PostgreSQL | kept in step by `memory_sync` / `syncAuto` |
+
+```yaml
+- id: memory-pg
+  config:
+    projectRoot: 'D:\DSH proj\AI记忆'
+    userId: owner
+    pythonExe: python
+    tools: true
+    autoContext: true
+    target: server                       # local | server | both
+    serverHost: '203.0.113.10'
+    serverUser: root
+    serverKeyFile: 'C:\path\id_rsa'    # omitted → auto-detect next to syncScript
+    serverDsn: 'postgresql://mem:mem@127.0.0.1:5432/mem'
+    tunnelPort: 15432
+    syncScript: 'D:\proj\shell\proactive\tools\sync_mem.py'
+    syncAuto: false
+```
+
+Notes:
+
+* **`server` mode never touches the local database.** The sidecar's DSN is rewritten to
+  `127.0.0.1:<tunnelPort>`, and `lib/pg_tunnel.py` (paramiko) opens the SSH forward lazily on the
+  first memory call. The tunnel is torn down with the plugin.
+* Why paramiko instead of `ssh.exe`: the Windows OpenSSH client refuses a private key whose ACL is
+  too permissive (`Permissions for 'id_rsa' are too open`), which is impossible to fix in an
+  unattended setup. `paramiko` is already the path the sync script uses.
+* `both` is **not** two live connections. One source of truth (local) + the sync script, so the
+  two databases cannot drift into two different histories. Use the `memory_sync` tool
+  (`status` / `pull` / `push` / `both`) or turn on `syncAuto`.
+* `memory_health` prints the active target and, in `server` mode, the tunnel description — that is
+  the quickest way to confirm which database you are actually talking to.
 
 ## Verifying locally
 
