@@ -1,0 +1,34 @@
+# 行尾与二进制归属。
+#
+# 存在的理由：仓库里同时有 Windows 脚本和跨平台源码。没有这个文件时，
+# 一次普通编辑就可能把整个文件的行尾换掉，git 于是报告「整文件改动」
+# （真实发生过：plugin/cordis.patch.yml 被写成 CRLF，diff 显示每一行都变了）。
+#
+# 规则：
+#   · 默认统一 LF 存、LF 检出 —— 这是唯一不会随编辑器漂移的选择
+#   · Windows 脚本（.cmd / .ps1）用 CRLF：cmd.exe 与 PowerShell 5.1 都能读 LF，
+#     但 CRLF 是它们的主场，省得踩奇怪的边界
+#   · 二进制显式声明，永不参与行尾转换与 diff
+
+* text=auto eol=lf
+
+# Windows 入口脚本
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制（别让 git 试图合并或转换它们）
+*.onnx binary
+*.tgz binary
+*.zip binary
+*.dll binary
+*.exe binary
+*.pyd binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.ico binary
+
+# .pylibs / vendor 本来就被 gitignore，这里再声明一次避免误加
+.pylibs/** -text -diff
+vendor/** -text -diff
