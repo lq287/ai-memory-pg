@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------- 零依赖单测
+  # 这四个文件刻意不连库、不依赖 .pylibs / 任何第三方包，所以能在裸 runner 上跑。
+  unit:
+    name: unit (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 语法编译
+        run: python -m compileall -q app tests scripts
+
+      - name: 单元测试（裁决护栏 / 管线 / 提炼 / 关键词）
+        run: |
+          set -e
+          for f in tests/test_decide.py tests/test_pipeline.py tests/test_distill.py tests/test_digest.py; do
+            echo "== $f"
+            python "$f"
+          done
+
+  # ------------------------------------------------- SQL 行为断言（PGlite）
+  # 用 PGlite（真 PostgreSQL 18 编译成 WASM，内置 pgvector + pg_trgm）跑全部
+  # sql/*.sql 与 99_selftest.sql 的断言，不需要 Docker，也不需要超级用户。
+  sql:
+    name: sql (PGlite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 安装验证夹具
+        run: npm ci
+
+      - name: 装载 SQL + 跑断言
+        run: node scripts/sqlcheck.mjs
