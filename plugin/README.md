@@ -84,6 +84,12 @@ cd <projectRoot> && printf '%s\n' '{"id":1,"op":"health"}' '{"id":2,"op":"shutdo
 * **`both` is not two live connections.** One source of truth (local) plus the sync script, so
   the two databases cannot drift into two histories.
 * **`dsn` / `userId` / `target` are read at spawn**, so changing them needs a host restart.
+* **Injected messages must carry a producer-owned `source.kind`.** Since session format v4
+  (dsh 0.2.x) the host validates injected messages: `source.kind` has to be **this plugin's own
+  name**, not the literal `"plugin"`. Getting that wrong fails *every turn* of the conversation
+  (`format v4 message requires a producer-owned source kind`) — v0.2.0 shipped that bug. v0.2.1
+  uses `kind: name`, which works on both 0.1.x and 0.2.x, and the whole injection is wrapped so a
+  failure degrades to "no preamble this turn" instead of a broken turn.
 * **The sidecar writes no files** (`PYTHONDONTWRITEBYTECODE=1`): on Windows the DSH sandbox is a
   `WRITE_RESTRICTED` token, and a stray `__pycache__` write outside the session workspace would
   be denied.

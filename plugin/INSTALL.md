@@ -242,6 +242,7 @@ dsh --profile <name> "调用 memory_health，把结果原文贴出来，不要�
 | `SSH 隧道在 …ms 内没起来` | 服务器不可达 / 私钥不对 / 端口占用 | 手工试 `python lib/pg_tunnel.py --host ... --key ...`，它会打印真实错误 |
 | sidecar 连续启动失败 3 次 | `projectRoot` 指错、`pythonExe` 是占位 stub | 用绝对路径，并确认该目录有 `app/` 与 `.pylibs/` |
 | `memory_sync` 报「没有配置 syncScript」 | `target=both` 但没给脚本路径 | 补 `syncScript`，或把 target 改回 `local` |
+| 每轮都报 `format v4 message requires a producer-owned source kind` | 插件 ≤0.2.0 的注入消息把 `source.kind` 写成了 `"plugin"`；会话格式 v4 要求它是插件自己的名字 | 升级到 **0.2.1+** |
 | 桌面上每轮闪黑框 | 子进程（`psql.exe` 等）被分配了新控制台 | 相关 spawn 必须 `windowsHide: true` / `CREATE_NO_WINDOW` |
 
 ---

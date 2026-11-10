@@ -556,53 +556,83 @@ export function apply(ctx, config) {
       const decision = await next();
       if (decision?.kind === "reject" || signal?.aborted) return decision;
 
-      // 一轮注入一次；refreshSteps > 0 时按步数间隔重新采样
-      const refresh = config.refreshSteps;
-      const due = step === 1 || (refresh > 0 && (step - 1) % refresh === 0);
-      if (!due) return decision;
-
-      const key = `${agent?.id ?? "?"}:${turn}`;
-      let text = cache.get(key);
-      if (text === undefined) {
-        try {
-          const r = await request("context", {
-            max_chars: config.contextBudget,
-            fact_limit: config.factLimit,
-            with_tasks: config.includeTasks,
-          });
-          text = r.empty ? "" : r.text;
-        } catch (err) {
-          // 记忆不可用 → 静默跳过，绝不让请求失败
-          log(`自动注入跳过：${err?.message || err}`);
-          text = "";
-        }
-        cache.set(key, text);
-        if (cache.size > 8) cache.delete(cache.keys().next().value);
+      // 整段包 try：注入是"锦上添花"，任何失败都只能降级成不注入。
+      // 惨痛教训（v0.2.0）：宿主把 source.kind 的取值规则从 "plugin" 改成
+      // "生产者自己的名字"（会话格式 v4）之后，本插件每轮都抛错，
+      // 界面上连着两条「本轮运行失败 format v4 message requires a
+      // producer-owned source kind」——整段对话不可用。
+      // 记忆层出问题只能让记忆失效，不能让会话挂掉。
+      try {
+        // 必须 await：injectPreamble 是 async，直接 return 它的 promise 时
+        // 这里只会捕获"调用时同步抛出"的错误，异步 rejection 会逃出去 ——
+        // 那就又回到"注入出错 → 整轮失败"的老问题。
+        return await injectPreamble(decision, { agent, turn, step });
+      } catch (err) {
+        log(`自动注入失败（已跳过，不影响本轮）：${err?.message || err}`);
+        return decision;
       }
-      if (!text) return decision;
-
-      const body = `${HEAD}（每次请求自动装配；需要更具体的内容再调 memory_recall）\n${text}`;
-      return {
-        kind: "enter",
-        messages: [
-          ...(decision.messages || []),
-          // 直接构造消息：@deepseek-ai/dsh-llm 的 createUserMessage 只是
-          // {role:"user", ...input, id: randomUUID()} 的冻结版，见该包实现。
-          // 第三方插件在 profile 里解析不到 @deepseek-ai/*，所以这里不 import 它。
-          {
-            id: globalThis.crypto.randomUUID(),
-            role: "user",
-            content: [{ type: "text", text: body }],
-            source: {
-              kind: "plugin",
-              plugin: name,
-              form: "snapshot",
-              sections: [{ name: HEAD, text: body }],
-            },
-          },
-        ],
-      };
     },
     { prepend: true },
   );
+
+  /**
+   * 组装并返回带前言的那一步决策。可能抛错，由调用方兜底。
+   * @param {object} decision
+   * @param {{agent: object, turn: number, step: number}} ctxObj
+   */
+  async function injectPreamble(decision, { agent, turn, step }) {
+    // 一轮注入一次；refreshSteps > 0 时按步数间隔重新采样
+    const refresh = config.refreshSteps;
+    const due = step === 1 || (refresh > 0 && (step - 1) % refresh === 0);
+    if (!due) return decision;
+
+    const key = `${agent?.id ?? "?"}:${turn}`;
+    let text = cache.get(key);
+
+    if (text === undefined) {
+      // 第一次（sidecar 冷启动要加载 ONNX 模型，约 1s）会让这一轮多等一会儿，
+      // 之后都是缓存命中。给注入单独一个较短的上限：sidecar 卡住时宁可这一轮
+      // 没有前言，也不能把每一轮都拖住 config.timeoutMs（30s）。
+      const budget = Math.min(config.timeoutMs, 8000);
+      const r = await request(
+        "context",
+        {
+          max_chars: config.contextBudget,
+          fact_limit: config.factLimit,
+          with_tasks: config.includeTasks,
+        },
+        budget,
+      );
+      text = r?.empty ? "" : String(r?.text || "");
+      cache.set(key, text);
+      if (cache.size > 8) cache.delete(cache.keys().next().value);
+    }
+
+    if (!text) return decision;
+
+    const body = `${HEAD}（每次请求自动装配；需要更具体的内容再调 memory_recall）\n${text}`;
+    return {
+      kind: "enter",
+      messages: [
+        ...(decision.messages || []),
+        // 直接构造消息：@deepseek-ai/dsh-llm 的 createUserMessage 只是
+        // {role:"user", ...input, id: randomUUID()} 的冻结版。第三方插件在
+        // profile 里解析不到 @deepseek-ai/*，所以不 import 它。
+        //
+        // ⚠️ source.kind 必须是**生产者自己的名字**（= 本插件的 name），
+        // 不能写字面量 "plugin" —— 会话格式 v4 起这条是硬校验，
+        // 写错会让整轮对话失败（见 pre-step 里的注释）。
+        {
+          id: globalThis.crypto.randomUUID(),
+          role: "user",
+          content: [{ type: "text", text: body }],
+          source: {
+            kind: name,
+            form: "snapshot",
+            sections: [{ name: HEAD, text: body }],
+          },
+        },
+      ],
+    };
+  }
 }
