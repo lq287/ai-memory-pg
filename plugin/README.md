@@ -33,6 +33,9 @@ an error *text*.
 ## Requirements
 
 * **Node ≥ 20** (provided by DSH)
+* **dsh ≥ 0.1.1-rc.2** — verified on both 0.1.x and 0.2.2-rc.1 (session format v4). The plugin has
+  **no runtime dependencies**: it imports no `@deepseek-ai/*` package, and on v4 hosts it registers the
+  session projection that a producer-owned injected message requires.
 * **Python 3.11+** with the memory project's dependencies in `<projectRoot>/.pylibs`
   (`psycopg`, `pgvector`, `onnxruntime`, `tokenizers`, `numpy`; `paramiko` for `target=server|both`)
 * **PostgreSQL 14+ with pgvector**, memory-project schema loaded

@@ -1,4 +1,4 @@
-# dsh-memory-pg 安装与配置（0.2.0）
+# dsh-memory-pg 安装与配置（0.2.2）
 
 一份「换台机器 / 换个 profile 也能照着抄」的说明。
 
@@ -19,8 +19,9 @@
 
 **DSH 侧**
 
-- dsh `0.1.1-rc.2` 或更新（profile 机制 + `agent/pre-step` 钩子）
+- dsh `0.1.1-rc.2` 或更新（profile 机制 + `agent/pre-step` 钩子）；已在 `0.2.2-rc.1`（会话格式 v4）上实测
 - 有 pnpm（profile 的 `package.json` 是 pnpm 工作区）
+- **不需要** `@deepseek-ai/*` 任何包：0.2.2 起插件零运行时依赖（0.1.x 有投影就注册、没有就走旧路径）
 
 **Python 侧**（插件会 spawn 一个常驻 `python -m app.sidecar`）
 
@@ -56,7 +57,7 @@ pnpm add "file:/绝对路径/到/memory-project/plugin"
 
 ```bash
 cd ~/.dsh/profiles/<profile-name>
-pnpm add "file:/绝对路径/dsh-memory-pg-0.2.0.tgz"
+pnpm add "file:/绝对路径/dsh-memory-pg-0.2.2.tgz"
 ```
 
 ### 方式三：从 npm（如果发布过）
@@ -189,8 +190,8 @@ pnpm add dsh-memory-pg
 
 ```bash
 cd /path/to/memory-project/plugin
-pnpm pack            # 产出 dsh-memory-pg-0.2.0.tgz
-tar tzf dsh-memory-pg-0.2.0.tgz    # 确认 lib/ 下 5 个文件都在
+pnpm pack            # 产出 dsh-memory-pg-0.2.2.tgz
+tar tzf dsh-memory-pg-0.2.2.tgz    # 确认 lib/ 下 5 个文件都在
 ```
 
 包内应含：`lib/index.js`、`lib/sidecar.js`、`lib/tunnel.js`、`lib/sync.js`、
