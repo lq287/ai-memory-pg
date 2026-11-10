@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-pg",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "PostgreSQL-backed long-term memory for DeepSeek Harness: native memory tools + a per-turn memory preamble (vector ⊕ keyword ⊕ graph recall, four-state write arbitration, day/week/month/year keyword digests).",
   "keywords": [
     "dsh",
@@ -50,11 +50,5 @@
   "homepage": "https://github.com/lq287/ai-memory-pg#readme",
   "bugs": {
     "url": "https://github.com/lq287/ai-memory-pg/issues"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": ">=4.0.1",
-    "@deepseek-ai/dsh-llm": ">=0.1.1-rc.2",
-    "@deepseek-ai/dsh-tools": ">=0.1.1-rc.2",
-    "@deepseek-ai/schemastery": ">=3.18.1"
   }
 }

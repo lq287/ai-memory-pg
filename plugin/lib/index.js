@@ -17,8 +17,19 @@
  * 自动注入直接跳过 —— **绝不让会话挂掉**。记忆是增强层，退化了仍然正确。
  */
 
-import z from "@deepseek-ai/schemastery";
-import { defineTool } from "@deepseek-ai/dsh-tools";
+// ⚠️ 这里**不 import 任何 `@deepseek-ai/*` 包**。
+//
+// 教训（2026-11-10，升级 dsh 0.2.2 后插件彻底不工作）：插件用 `file:` 装进 profile 时，
+// pnpm 给它的是一个实体目录，而它 import 的 peer 依赖（@deepseek-ai/dsh-tools、
+// /schemastery）只在 .pnpm 里，Node 沿目录向上找不到 —— 于是 import 直接失败，
+// cordis 静默跳过这个插件：**没有工具、没有注入、启动也不报错**，
+// 只在 dump-config 里留一句 patch: entry "memory-pg" not found。
+// 官方第三方插件（皮肤）也是零 @deepseek-ai 依赖，就为了避开这一类问题。
+//
+// 我们真正需要的只有两件小事，都在本文件里实现了：
+//   · defineTool —— 它只是把参数 DSL 转成 JSON Schema 再包一层校验；
+//     ctx.tools.register 收的就是普通对象（{name, description, parameters, output, execute}）。
+//   · Config（schemastery）—— 配置改成 apply 里手工规范化 + 校验。
 import path from "node:path";
 import fs from "node:fs";
 import { MemorySidecar } from "./sidecar.js";
@@ -26,82 +37,49 @@ import { PgTunnel } from "./tunnel.js";
 import { runSync, SYNC_MODES } from "./sync.js";
 
 export const name = "memory-pg";
+// 这两个服务 0.1.x 与 0.2.x 都有。`sessionProjections`（0.2.x 的注入投影）
+// 刻意**不写在这里**：inject 是静态的，写进去会让插件在 0.1.x 上永远等待、
+// 静默不加载。改用 apply() 里的可选依赖写法 ctx.inject([...], cb)。
 export const inject = ["tools", "agents"];
 
-export const Config = z.object({
-  /** 记忆库项目目录（含 app/ 与 .pylibs/），必填。 */
-  projectRoot: z.string().required(),
-  /** 记忆归属用户。 */
-  userId: z.string().default("owner"),
-  /** PostgreSQL DSN；留空则用子进程环境里的 MEM_PG_DSN。 */
-  dsn: z.string(),
-  /** python 可执行文件。 */
-  pythonExe: z.string().default("python"),
-  /** 是否注册工具。 */
-  tools: z.boolean().default(true),
-  /** 是否在每轮请求前自动注入记忆前言。 */
-  autoContext: z.boolean().default(true),
-  /** 自动注入的字符预算（粗略 token 控制）。 */
-  contextBudget: z.number().min(200).max(8000).default(900),
-  /** 自动注入里带多少条长期事实。 */
-  factLimit: z.number().min(1).max(50).default(10),
-  /** 自动注入里是否带进行中任务。 */
-  includeTasks: z.boolean().default(true),
-  /** 同一轮内重新采样前言的步数间隔（0 = 一轮只注入一次）。 */
-  refreshSteps: z.number().min(0).max(50).default(0),
-  /** 单次 sidecar 调用超时（毫秒）。 */
-  timeoutMs: z.number().min(1000).max(120000).default(30000),
+const PLUGIN_VERSION = "0.2.2";
 
-  // ------------------------------------------------------------ 用哪一张库
-  /**
-   * 记忆库目标：
-   *   local  —— 只用本机这张库（默认，和以前完全一样）
-   *   server —— 只用服务器上那张库：自动拉一条 SSH 本地端口转发，
-   *             sidecar 的 DSN 指向 127.0.0.1:tunnelPort，本机库完全不会被碰
-   *   both   —— 工具读写本机这张库，靠 memory_sync / syncAuto 与服务器保持一致
-   * 只用一个库时，另一张库不会有任何写入。
-   */
-  target: z.string().default("local"),
-  /** server 模式要连的机器（不给就用环境变量 DSH_SSH_HOST）。 */
-  serverHost: z.string().default(""),
-  serverPort: z.number().default(22),
-  serverUser: z.string().default(""),
-  /** 私钥文件；留空则自动找同步脚本旁边的 run/sync/ssh/id_rsa。 */
-  serverKeyFile: z.string().default(""),
-  /** 没有可用私钥时的回退（不给就用 DSH_SSH_PASS）。 */
-  serverPassword: z.string().default(""),
-  /** 服务器上那张库的 DSN（隧道里连它）。 */
-  serverDsn: z.string().default(""),
-  /** 本地隧道监听端口。 */
-  tunnelPort: z.number().min(1).max(65535).default(15432),
-  /** 双向同步脚本 sync_mem.py 的路径；留空则 memory_sync 会直接说怎么配。 */
-  syncScript: z.string().default(""),
-  /** 写操作之后是否自动同步（target=both 时才有意义）。 */
-  syncAuto: z.boolean().default(false),
-  /** 单次同步的超时（毫秒）。 */
-  syncTimeoutMs: z.number().min(10000).max(1800000).default(600000),
-  /** 额外 PYTHONPATH（OS 路径分隔符分隔）；paramiko 不在系统 python 里时用它。 */
-  pythonPath: z.string().default(""),
-});
+/**
+ * 把本插件用的参数 DSL 转成标准 JSON Schema。
+ *
+ * DSL 形状（沿用 dsh 内建工具插件的写法，迁移成本最低）：
+ *   { query: { type: "string", required: true, description: "…" } }
+ * 转换后：
+ *   { type: "object", properties: { query: { type: "string", description: "…" } },
+ *     required: ["query"], additionalProperties: false }
+ *
+ * `type: "json"`（任意 JSON 值）转成 `{}` —— JSON Schema 里空 schema 就是"任意"。
+ */
+function specToJsonSchema(spec, depth = 0) {
+  if (!spec || typeof spec !== "object") return {};
+  const props = {};
+  const required = [];
+  for (const [key, raw] of Object.entries(spec)) {
+    if (!raw || typeof raw !== "object") continue;
+    const { required: isRequired, ...rest } = raw;
+    if (rest.type === "json") delete rest.type;
+    if (rest.properties) rest.properties = specToJsonSchema(rest.properties, depth + 1).properties;
+    if (rest.items && rest.items.properties) {
+      rest.items.properties = specToJsonSchema(rest.items.properties, depth + 1).properties;
+    }
+    props[key] = rest;
+    if (isRequired) required.push(key);
+  }
+  const out = { type: "object", properties: props };
+  if (required.length) out.required = required;
+  // 顶层严格（模型编字段会被挡掉）；嵌套的 items 不加，保持宽松以免误伤
+  if (depth === 0) out.additionalProperties = false;
+  return out;
+}
 
-// ---------------------------------------------------------------------------
-// 工具构造辅助
-//
-// 每个工具统一返回 {"text": "..."}，输出 schema 与 render 只写一次。
-// 为什么统一：defineTool 要求声明 output.schema + render（漏了会在 apply 时抛
-// "Cannot read properties of undefined (reading 'render')"），而且模型最终看到的
-// 就是 render 出来的文本 —— 与其 7 个工具各写一遍，不如在这里定一次契约。
-// ---------------------------------------------------------------------------
-const TEXT_OUTPUT = {
-  schema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      text: { type: "string", required: true },
-    },
-  },
-  render: (_args, value) => [{ type: "text", text: String(value?.text ?? "") }],
-};
+/** 每个工具的返回值统一是 { text }，输出 schema 与 render 只写一次。 */
+const TEXT_OUTPUT_SCHEMA = specToJsonSchema({ text: { type: "string", required: true } });
+const TEXT_RENDER = (_args, value) => [{ type: "text", text: String(value?.text ?? "") }];
 
 /** 统一的错误文本：给出下一步该怎么查，而不是只报一句异常。 */
 function errText(prefix, err) {
@@ -110,7 +88,7 @@ function errText(prefix, err) {
 }
 
 /**
- * 造一个"输入参数 → 一行文本"的工具。
+ * 造一个"输入参数 → 一行文本"的工具（等价于 defineTool + 统一输出契约）。
  * @param {object} spec
  * @param {string} spec.name
  * @param {string} spec.description
@@ -118,13 +96,53 @@ function errText(prefix, err) {
  * @param {(args: object) => Promise<string>} spec.run 返回给模型看的文本
  */
 function textTool(spec) {
-  return defineTool({
+  return {
     name: spec.name,
     description: spec.description,
-    parameters: spec.parameters || {},
-    output: TEXT_OUTPUT,
-    execute: async (args) => ({ text: await spec.run(args || {}) }),
-  });
+    parameters: specToJsonSchema(spec.parameters || {}),
+    output: { schema: TEXT_OUTPUT_SCHEMA, render: TEXT_RENDER },
+    async execute(args) {
+      return { text: await spec.run(args || {}) };
+    },
+  };
+}
+
+/**
+ * 配置的默认值与规范化。原来由 schemastery 的 `Config` 声明，
+ * 现在手写：少一个运行时依赖，代价是校验要自己写（见 apply 里的 target / projectRoot 检查）。
+ */
+function normalizeConfig(raw) {
+  const c = raw && typeof raw === "object" ? raw : {};
+  const num = (v, d, min, max) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return d;
+    return Math.min(max, Math.max(min, n));
+  };
+  return {
+    projectRoot: typeof c.projectRoot === "string" ? c.projectRoot : "",
+    userId: c.userId || "owner",
+    dsn: c.dsn || "",
+    pythonExe: c.pythonExe || "python",
+    pythonPath: c.pythonPath || "",
+    tools: c.tools !== false,
+    autoContext: c.autoContext !== false,
+    contextBudget: num(c.contextBudget, 900, 200, 8000),
+    factLimit: num(c.factLimit, 10, 1, 50),
+    includeTasks: c.includeTasks !== false,
+    refreshSteps: num(c.refreshSteps, 0, 0, 50),
+    timeoutMs: num(c.timeoutMs, 30000, 1000, 120000),
+    target: String(c.target || "local").toLowerCase(),
+    serverHost: c.serverHost || "",
+    serverPort: num(c.serverPort, 22, 1, 65535),
+    serverUser: c.serverUser || "",
+    serverKeyFile: c.serverKeyFile || "",
+    serverPassword: c.serverPassword || "",
+    serverDsn: c.serverDsn || "",
+    tunnelPort: num(c.tunnelPort, 15432, 1, 65535),
+    syncScript: c.syncScript || "",
+    syncAuto: c.syncAuto === true,
+    syncTimeoutMs: num(c.syncTimeoutMs, 600000, 10000, 1800000),
+  };
 }
 
 /** 把召回结果渲染成紧凑多行文本（模型读起来省 token）。 */
@@ -149,6 +167,8 @@ function renderHits(result) {
  * @param {ReturnType<typeof Config>} config
  */
 export function apply(ctx, config) {
+  // 配置规范化（等价于原来 schemastery 的 Config：补默认值 + 夹紧范围）。
+  config = normalizeConfig(config);
   const log = (line) => {
     const logger = ctx.logger?.("memory-pg");
     if (logger?.info) logger.info(line);
@@ -268,6 +288,57 @@ export function apply(ctx, config) {
     void sidecar.dispose();
     tunnel?.dispose();
   });
+
+  // ------------------------------------------------- 会话投影（socket 0.2.x 必需）
+  //
+  // dsh 0.2.x 的会话格式 v4 起，插件注入的 user 消息必须带**被投影认领的**
+  // source kind，否则每一轮都在宿主侧校验失败：
+  //   format v4 message requires a producer-owned source kind
+  // 内建 time-context 的做法是：inject 里声明 sessionProjections，apply 里
+  // ctx.sessionProjections.register({key, stateVersion, stateSchema, init, apply})，
+  // 注入前 await 注册结果。没有投影 ⇒ 消息的 kind 不属于任何 producer ⇒ 整轮失败。
+  //
+  // 但 0.1.x 没有这个服务，而 `inject` 是静态的：直接把它写进 inject 会让插件在
+  // 0.1.x 上永远等待、静默不加载（本插件 v0.2.0/0.2.1 在 0.2.2 宿主上就是这样
+  // 悄无声息地失效的）。所以用 cordis 的**可选依赖**写法 ctx.inject(services, cb)：
+  // 服务在才注册，服务不在就跳过。
+  //
+  // 状态是空的（不需要按会话累计任何东西），但框架会调 stateSchema.parse(值)，
+  // 所以给一个满足该约定的最小 schema —— 不为一个空对象引入 zod 依赖。
+  const PERMISSIVE_STATE = { parse: (v) => v };
+  let projectionReady = null;
+  let projectionBroken = false;
+  // 注意：**不能**直接写 ctx.sessionProjections —— cordis 对未在 inject 里声明的服务
+  // 会抛 "cannot get property X without inject"。探可用性必须用 ctx.get(name)。
+  const hostHasProjections = () => {
+    try {
+      return ctx.get?.("sessionProjections") !== undefined;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    ctx.inject?.(["sessionProjections"], (projCtx) => {
+      try {
+        projectionReady = projCtx.sessionProjections.register({
+          key: "memoryPreamble",
+          stateVersion: 1,
+          stateSchema: PERMISSIVE_STATE,
+          init: () => ({}),
+          apply: (state) => state,
+        });
+      } catch (err) {
+        projectionBroken = true;
+        log(`会话投影注册失败，关闭自动注入：${err?.message || err}`);
+      }
+    });
+  } catch (err) {
+    // 老宿主可能连 ctx.inject 都没有；那说明也不需要投影
+    if (hostHasProjections()) {
+      projectionBroken = true;
+      log(`会话投影不可用，关闭自动注入：${err?.message || err}`);
+    }
+  }
 
   // -------------------------------------------------------------- 工具
   if (config.tools) {
@@ -586,6 +657,17 @@ export function apply(ctx, config) {
     const due = step === 1 || (refresh > 0 && (step - 1) % refresh === 0);
     if (!due) return decision;
 
+    // v4（0.2.x）宿主上，注入前必须确认投影已经注册好；否则宿主会以
+    // "requires a producer-owned source kind" 拒掉整轮。
+    if (hostHasProjections()) {
+      if (projectionBroken) return decision;
+      if (!projectionReady) {
+        log("会话投影尚未就绪，本轮跳过自动注入");
+        return decision;
+      }
+      await projectionReady; // 注册失败会在这里 reject，由上层 catch 兜住
+    }
+
     const key = `${agent?.id ?? "?"}:${turn}`;
     let text = cache.get(key);
 
@@ -635,4 +717,17 @@ export function apply(ctx, config) {
       ],
     };
   }
+
+  // 一行就绪日志：升级/排查时"插件到底有没有生效"应该一眼能看出来，
+  // 而不是靠"这一轮有没有记忆前言"去反推。
+  // 特意直接写 stderr：dsh web 的 ctx.logger 不落到控制台，
+  // 排查插件加载问题时那条通道是看不见的（0.2.2 升级时就因此白查了一轮）。
+  const readyLine =
+    `memory-pg ready: v${PLUGIN_VERSION} target=${target} ` +
+    `tools=${config.tools ? "on" : "off"} autoContext=${config.autoContext ? "on" : "off"} ` +
+    `projection=${
+      hostHasProjections() ? (projectionBroken ? "failed" : "registered") : "legacy-host"
+    }`;
+  log(readyLine);
+  console.error(`[memory-pg] ${readyLine}`);
 }

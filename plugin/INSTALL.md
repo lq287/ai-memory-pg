@@ -242,8 +242,15 @@ dsh --profile <name> "调用 memory_health，把结果原文贴出来，不要�
 | `SSH 隧道在 …ms 内没起来` | 服务器不可达 / 私钥不对 / 端口占用 | 手工试 `python lib/pg_tunnel.py --host ... --key ...`，它会打印真实错误 |
 | sidecar 连续启动失败 3 次 | `projectRoot` 指错、`pythonExe` 是占位 stub | 用绝对路径，并确认该目录有 `app/` 与 `.pylibs/` |
 | `memory_sync` 报「没有配置 syncScript」 | `target=both` 但没给脚本路径 | 补 `syncScript`，或把 target 改回 `local` |
-| 每轮都报 `format v4 message requires a producer-owned source kind` | 插件 ≤0.2.0 的注入消息把 `source.kind` 写成了 `"plugin"`；会话格式 v4 要求它是插件自己的名字 | 升级到 **0.2.1+** |
+| 每轮都报 `format v4 message requires a producer-owned source kind` | 插件 ≤0.2.0 的注入消息把 `source.kind` 写成了 `"plugin"`；会话格式 v4 要求它是插件自己的名字，并且要求插件注册 `sessionProjections` 投影 | 升级到 **0.2.2+** |
+| 升级 dsh 后**工具全没了**，启动日志只有一句 `patch: entry "memory-pg" not found` | profile 规范化把 `dsh-memory-pg` 从 `dsh.profile.bundles` 里剔掉了（它还在 `dependencies` 里，所以看着像装了）。bundles 里没有它 ⇒ 它的补丁层不应用 ⇒ 插件从未加载，而且**不报错** | 把 `"dsh-memory-pg"` 加回 `profiles/<名字>/package.json` 的 `dsh.profile.bundles`，然后重启 |
+| 启动日志有 `memory-pg (dsh-memory-pg): Error: cannot find package '@deepseek-ai/...'` | ≤0.2.1 有 peer 依赖，而 dsh 初始化 profile 用的是 `autoInstallPeers: false`，peer 根本不会被安装 | 用 **0.2.2+**（已改成零运行时依赖，不 import 任何 `@deepseek-ai/*`） |
+| 改完代码但行为没变 | pnpm 对 `file:` 依赖会用已有副本 | 在 profile 目录跑 `pnpm install --force`（或先删 `node_modules/<包名>`） |
 | 桌面上每轮闪黑框 | 子进程（`psql.exe` 等）被分配了新控制台 | 相关 spawn 必须 `windowsHide: true` / `CREATE_NO_WINDOW` |
+
+> 想在启动日志里确认插件到底有没有生效，看这一行（0.2.2 起直接写 stderr）：
+> `[memory-pg] memory-pg ready: v0.2.2 target=… tools=on autoContext=on projection=registered|legacy-host`
+> `projection=registered` 表示新版要求的会话投影已注册；`legacy-host` 表示宿主是 0.1.x（不需要投影）。
 
 ---
 
